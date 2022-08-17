@@ -1,17 +1,13 @@
 import { EmissionsFactorInterface, EMISSIONS_FACTOR_CLASS_IDENTIFER } from "@blockchain-carbon-accounting/emissions_data_lib/src/emissionsFactor";
-import { OilAndGasAssetInterface, OIL_AND_GAS_ASSET_CLASS_IDENTIFER } from "@blockchain-carbon-accounting/oil-and-gas-data-lib/src/oilAndGasAsset";//../oilandgas-data/src/oilAndGasAsset";
 import { UtilityLookupItemInterface, UTILITY_LOOKUP_ITEM_CLASS_IDENTIFIER } from "@blockchain-carbon-accounting/emissions_data_lib/src/utilityLookupItem";
 import { Presets, SingleBar } from "cli-progress";
 import { v4 as uuidv4 } from 'uuid';
 import { readFile } from "xlsx";
 import { COUNTRY_MAPPINGS, STATE_NAME_MAPPING } from "./abbrevToName";
-import { EmissionFactorDbInterface, UtilityLookupItemDbInterface, OilAndGasAssetDbInterface } from "./db";
-
+import { EmissionFactorDbInterface, UtilityLookupItemDbInterface } from "./db";
 import { EMISSIONS_FACTOR_TYPE } from "./utils";
 
-//import { chain } from 'stream-chain';
-
-class LoadInfo {
+export class LoadInfo {
   filename: string
   sheet: string
   progressBar: SingleBar
@@ -62,15 +58,17 @@ export type ParseWorksheetOpts = {
   skip_rows?: number,
   format?: string,
   source?: string,
-  year?: string
+  year?: string,
+  cellDates?: boolean,
+  raw?: boolean
 };
 
-function getStateNameMapping(key: keyof typeof STATE_NAME_MAPPING) {
+export function getStateNameMapping(key: keyof typeof STATE_NAME_MAPPING) {
   return STATE_NAME_MAPPING[key];
 }
 
 function getCountryMapping(key: keyof typeof COUNTRY_MAPPINGS) {
-  return COUNTRY_MAPPINGS[key]
+  return COUNTRY_MAPPINGS[key];
 }
 
 export const parseWorksheet = (opts: ParseWorksheetOpts) => {
@@ -86,10 +84,12 @@ export const parseWorksheet = (opts: ParseWorksheetOpts) => {
     },
     Presets.shades_classic
   );
+
   const file_name = opts.file;
 
   opts.verbose && console.log("Reading file ...  ", file_name);
-  const workbook = readFile(file_name);
+  const workbook = readFile(file_name,{
+    cellDates: opts.cellDates, raw: opts.raw});
 
   const sheet_name_list = workbook.SheetNames;
 
@@ -105,6 +105,7 @@ export const parseWorksheet = (opts: ParseWorksheetOpts) => {
     const worksheet = workbook.Sheets[sheet];
     const headers: Record<string, string> = {};
     let header_row = 1;
+    opts.skip_rows = Number(opts.skip_rows)
     if (opts.skip_rows && opts.skip_rows >= header_row) {
       header_row = opts.skip_rows + 1;
     }
@@ -128,7 +129,6 @@ export const parseWorksheet = (opts: ParseWorksheetOpts) => {
           break;
         }
       }
-
       const col = z.substring(0, tt).trim();
       const row = parseInt(z.substring(tt));
       const v = worksheet[z].v
@@ -168,10 +168,13 @@ export const loadEmissionsFactors = async (opts: ParseWorksheetOpts, progressBar
     // Net_Generation = value from 'NERC region annual net generation (MWh)'
     // Net_Generation_UOM = MWH
     // CO2_Equivalent_Emissions = value from 'NERC region annual CO2 equivalent emissions (tons)'
-    // CO2_Equivalent_Emissions_UOM = tons
+    // CO2_Equivalent_Emissions_UOM = tons (us tons, we convert into kg below)
     // Source = https://www.epa.gov/sites/production/files/2020-01/egrid2018_all_files.zip
     // async.eachSeries(data, function iterator(row, callback) {
     // console.log(`Received data of length ${data.length}`);
+
+    // Note: mass unit is in US tons, so we need to convert to kg to remove ambiguity
+    const us_ton_in_kg = 907.185;
 
     if (opts.sheet.startsWith("NRL")) {
       const data = parseWorksheet(opts);
@@ -184,9 +187,16 @@ export const loadEmissionsFactors = async (opts: ParseWorksheetOpts, progressBar
         // get annual generation and emissions
         const net_generation = row["NERC region annual net generation (MWh)"].toString();
         const total_net_generation = Number(net_generation);
-        const total_co2_equivalent_emissions = Number(row["NERC region annual CO2 equivalent emissions (tons)"].toString());
+        const total_co2_equivalent_emissions = us_ton_in_kg * Number(row["NERC region annual CO2 equivalent emissions (tons)"].toString());
         // get the co2e per MWh
         const co2_equivalent_emissions = String(total_co2_equivalent_emissions / total_net_generation);
+        // get renewables data if available
+        const non_renewables = row["NERC region annual total nonrenewables net generation (MWh)"].toString()
+        const renewables = row["NERC region annual total renewables net generation (MWh)"].toString()
+        let percent_of_renewables = "";
+        if (non_renewables !== "" && renewables !== "") {
+          percent_of_renewables = String(100.0 * Number(renewables) / (Number(non_renewables) + Number(renewables)));
+        }
         // generate a unique for the row
         const d: EmissionsFactorInterface = {
           class: EMISSIONS_FACTOR_CLASS_IDENTIFER,
@@ -205,17 +215,11 @@ export const loadEmissionsFactors = async (opts: ParseWorksheetOpts, progressBar
           net_generation_uom: "MWH",
           activity_uom: "MWH",
           co2_equivalent_emissions,
-          co2_equivalent_emissions_uom: "tons",
+          co2_equivalent_emissions_uom: "kg",
           source: opts.source || opts.file,
-          non_renewables:
-            row[
-              "NERC region annual total nonrenewables net generation (MWh)"
-            ].toString(),
-          renewables:
-            row[
-              "NERC region annual total renewables net generation (MWh)"
-            ].toString(),
-          percent_of_renewables: "",
+          non_renewables,
+          renewables,
+          percent_of_renewables,
         };
         await db.putEmissionFactor(d);
         loader.incLoaded();
@@ -233,9 +237,16 @@ export const loadEmissionsFactors = async (opts: ParseWorksheetOpts, progressBar
         // get annual generation and emissions
         const net_generation = row["State annual net generation (MWh)"].toString();
         const total_net_generation = Number(net_generation);
-        const total_co2_equivalent_emissions = Number(row["State annual CO2 equivalent emissions (tons)"].toString());
+        const total_co2_equivalent_emissions = us_ton_in_kg * Number(row["State annual CO2 equivalent emissions (tons)"].toString());
         // get the co2e per MWh
         const co2_equivalent_emissions = String(total_co2_equivalent_emissions / total_net_generation);
+        // get renewables data if available
+        const non_renewables = row["State annual total nonrenewables net generation (MWh)"].toString()
+        const renewables = row["State annual total renewables net generation (MWh)"].toString()
+        let percent_of_renewables = "";
+        if (non_renewables !== "" && renewables !== "") {
+          percent_of_renewables = String(100.0 * Number(renewables) / (Number(non_renewables) + Number(renewables)));
+        }
         // generate a unique for the row
         const d: EmissionsFactorInterface = {
           class: EMISSIONS_FACTOR_CLASS_IDENTIFER,
@@ -254,15 +265,11 @@ export const loadEmissionsFactors = async (opts: ParseWorksheetOpts, progressBar
           net_generation_uom: "MWH",
           activity_uom: "MWH",
           co2_equivalent_emissions,
-          co2_equivalent_emissions_uom: "tons",
+          co2_equivalent_emissions_uom: "kg",
           source: opts.source || opts.file,
-          non_renewables:
-            row[
-              "State annual total nonrenewables net generation (MWh)"
-            ].toString(),
-          renewables:
-            row["State annual total renewables net generation (MWh)"].toString(),
-          percent_of_renewables: "",
+          non_renewables,
+          renewables,
+          percent_of_renewables,
         };
         await db.putEmissionFactor(d);
         loader.incLoaded();
@@ -279,9 +286,16 @@ export const loadEmissionsFactors = async (opts: ParseWorksheetOpts, progressBar
         // get annual generation and emissions
         const net_generation = row["U.S. annual net generation (MWh)"].toString();
         const total_net_generation = Number(net_generation);
-        const total_co2_equivalent_emissions = Number(row["U.S. annual CO2 equivalent emissions (tons)"].toString());
+        const total_co2_equivalent_emissions = us_ton_in_kg * Number(row["U.S. annual CO2 equivalent emissions (tons)"].toString());
         // get the co2e per MWh
         const co2_equivalent_emissions = String(total_co2_equivalent_emissions / total_net_generation);
+        // get renewables data if available
+        const non_renewables = row["U.S. annual total nonrenewables net generation (MWh)"].toString()
+        const renewables = row["U.S. annual total renewables net generation (MWh)"].toString()
+        let percent_of_renewables = "";
+        if (non_renewables !== "" && renewables !== "") {
+          percent_of_renewables = String(100.0 * Number(renewables) / (Number(non_renewables) + Number(renewables)));
+        }
         opts.verbose && console.log("-- Prepare to insert from ", row);
         // generate a unique for the row
         const d: EmissionsFactorInterface = {
@@ -301,15 +315,11 @@ export const loadEmissionsFactors = async (opts: ParseWorksheetOpts, progressBar
           net_generation_uom: "MWH",
           activity_uom: "MWH",
           co2_equivalent_emissions,
-          co2_equivalent_emissions_uom: "tons",
+          co2_equivalent_emissions_uom: "kg",
           source: opts.source || opts.file,
-          non_renewables:
-            row[
-              "U.S. annual total nonrenewables net generation (MWh)"
-            ].toString(),
-          renewables:
-            row["U.S. annual total renewables net generation (MWh)"].toString(),
-          percent_of_renewables: "",
+          non_renewables,
+          renewables,
+          percent_of_renewables,
         };
         await db.putEmissionFactor(d);
         loader.incLoaded();
@@ -533,50 +543,5 @@ export const importUtilityIdentifiers = async (opts: ParseWorksheetOpts, progres
     loader.done();
   } else {
     console.log("This sheet or PDF is not currently supported.");
-  }
-}
-
-export const importOilAndGasAssets = async (opts: ParseWorksheetOpts, progressBar: SingleBar, db: OilAndGasAssetDbInterface) => {
-  if (opts.format === "US_asset_data") {
-    // import data for each valid row, eg:
-
-    const data = parseWorksheet(opts);
-    console.log(opts.file);
-    //console.log(data);
-    const loader = new LoadInfo(opts.file, opts.sheet, progressBar, data.length);
-    for (const row of data) {
-      if (!row) { loader.incIgnored('Undefined row'); continue; }
-      //if (!row["Data Year"]) { loader.incIgnored('Missing "Data Year"'); continue; }
-      //if (row["Data Year"] == "YEAR") { loader.incIgnored('Header row'); continue; }
-      opts.verbose && console.log("-- Prepare to insert from ", row);
-      const d: OilAndGasAssetInterface = {
-        uuid: uuidv4(),
-        class: OIL_AND_GAS_ASSET_CLASS_IDENTIFER,
-        type: row["TYPE"],
-        country: row["COUNTRY"],
-        latitude: row["LATITUDE"],
-        longitude: row["LONGITUDE"],
-        name: row["NAME"],//row["NAME"] !== "NOT AVAILABLE" ? row["NAME"] : null,
-        operator: row["OPERATOR"],
-        division_type: "State",
-        division_name: row["STATE"],
-        sub_division_type: "County",
-        sub_division_name: row["COUNTY"],
-        status: row["STATUS"],
-        api: row["API"],
-        description: row["NAICS_DESC"],
-        source: row["SOURCE"],
-        source_date: row["SOURCEDATE"],
-        validation_method: row["VAL_METHOD"],
-        validation_date: row["VAL_DATE"],
-        product: row["PRODTYPE"],
-        field: row["FILED"],
-        depth: row["TOTDEPTH"] !== '-999' ? row["TOTDEPTH"] : null,
-      };
-      await db.putAsset(d);
-      loader.incLoaded();
-    }
-    loader.done();
-    return;
   }
 }

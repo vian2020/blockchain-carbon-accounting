@@ -23,7 +23,7 @@ type RequestAuditProps = {
 
 
 type ShipmentMode = 'air' | 'ground' | 'sea' | '';
-type ActivityType = 'flight' | 'shipment' | 'emissions_factor' | 'natural_gas' | 'electricity' | ''
+type ActivityType = 'flight' | 'shipment' | 'emissions_factor' | 'natural_gas' | 'electricity' | 'other' |''
 
 export type EmissionsFactorForm = {
   issued_from: string,
@@ -141,6 +141,21 @@ function uomIsDistance(uom: string) {
   if (!uom) return false
   const luom = uom.toLowerCase()
   return (luom === 'km' || luom === 'miles' || luom === 'mi')
+}
+
+function getActivitiesTypes(signedInAddress?: string) {
+  const atypes = [
+            {value:'flight', label:'Flight'},
+            {value:'shipment', label:'Shipment' },
+            {value:'electricity', label:'Electricity' },
+            {value:'natural_gas', label:'Natural Gas' },
+            {value:'emissions_factor', label:'Emissions Factor'}
+          ]
+
+  if (signedInAddress) {
+    atypes.push({value:'other', label:'Other'});
+  }
+  return atypes;
 }
 
 const EmissionsFactorUomInputs: FC<{
@@ -510,7 +525,7 @@ const RequestAudit: FC<RequestAuditProps> = ({ signedInAddress }) => {
       {!signedInAddress && <div>
         <h2>Welcome to Blockchain Carbon Accounting</h2>
 
-        <p>If you already have a wallet on the Binance Smart Chain Testnet, you can connect to it with Metamask now to login.  If you don't have a wallet yet, you can <a rel="noreferrer" target="_blank" href="https://medium.com/spartanprotocol/how-to-connect-metamask-to-bsc-testnet-7d89c111ab2">follow these instructions to get a wallet</a>.  Then please <a rel="noreferrer" target="_blank" href="https://www.opensourcestrategies.com/contact-us/">contact us</a> so we can register your wallet on the network.</p>
+        <p>If you already have a wallet on the Avalanche Fuji Testnet, you can connect to it with Metamask now to login.  If you don't have a wallet yet, you can <a rel="noreferrer" target="_blank" href="https://umbria.network/connect/avalanche-fuji-testnet">follow these instructions to get a wallet</a>.  Then please <a rel="noreferrer" target="_blank" href="https://www.opensourcestrategies.com/contact-us/">contact us</a> so we can register your wallet on the network.</p>
         <p>You can also <Link href="/sign-up">Sign Up</Link> with your email to get an account and try it out.</p>
 
         <p>Or you can start here to get an emissions estimate here, then request an emissions audit based on the result:</p>
@@ -545,13 +560,7 @@ const RequestAudit: FC<RequestAuditProps> = ({ signedInAddress }) => {
           </Form.Group>
         </Row>
         <FormSelectRow form={emForm} setForm={setEmForm} errors={formErrors} field="activity_type" label="Activity Type" disabled={!!topSuccess}
-          values={[
-            {value:'flight', label:'Flight'},
-            {value:'shipment', label:'Shipment' },
-            {value:'electricity', label:'Electricity' },
-            {value:'natural_gas', label:'Natural Gas' },
-            {value:'emissions_factor', label:'Emissions Factor'}
-          ]}
+          values={getActivitiesTypes(signedInAddress)}
           onChange={_=>{ setValidated(false) }}
           alsoSet={{
             'electricity': {activity_uom: 'kwh'},
